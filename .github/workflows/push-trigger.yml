@@ -16,6 +16,7 @@ on:
       - 1.2.0.1
       - MOSIP*
       - dev
+      - dev2
 env:
   DBUSER_PWD: mosip123
   SU_USER_PWD: abc123
