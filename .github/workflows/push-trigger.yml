@@ -15,7 +15,7 @@ on:
       - develop
       - 1.2.0.1
       - MOSIP*
-      - dev
+      - dev3
 env:
   DBUSER_PWD: mosip123
   SU_USER_PWD: abc123
