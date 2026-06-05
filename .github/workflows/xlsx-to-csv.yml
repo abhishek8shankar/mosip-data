@@ -13,56 +13,75 @@ on:
 jobs:
   convert_xlsx_to_csv:
     runs-on: ubuntu-latest
+    env:
+      PR_NUMBER: ${{ github.event.number }}
+      PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+      PR_USER_LOGIN: ${{ github.event.pull_request.user.login }}
+
     steps:
     - name: Check for xlsx changes
       id: check_xlsx
       run: |
-        PR_NUMBER=${{ github.event.number }}
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          echo "xlsx_changed=1" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+
         FILES=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
           -H "Accept: application/vnd.github.v3+json" \
-          "https://api.github.com/repos/${{ github.repository }}/pulls/$PR_NUMBER/files")
+          "https://api.github.com/repos/${{ github.repository }}/pulls/${PR_NUMBER}/files")
         XLSX_CHANGED=$(echo "$FILES" | jq '[.[].filename | select(endswith(".xlsx"))] | length')
         echo "xlsx_changed=$XLSX_CHANGED" >> $GITHUB_OUTPUT
 
-    - name: Skip if no xlsx changes
-      if: steps.check_xlsx.outputs.xlsx_changed == '0' && github.event_name != 'workflow_dispatch'
-      run: |
-        echo "No xlsx files changed. Skipping workflow."
-        exit 0
-
     - name: Clone the repository
-      if: steps.check_xlsx.outputs.xlsx_changed != '0' || github.event_name == 'workflow_dispatch'
+      if: steps.check_xlsx.outputs.xlsx_changed != '0'
       run: |
-        git clone -b ${{ github.event.pull_request.head.ref }} https://github.com/${{ github.event.pull_request.head.repo.full_name }}.git
+        git clone -b "$PR_HEAD_REF" "https://github.com/${PR_HEAD_REPO}.git"
 
     - name: Get author email
-      if: steps.check_xlsx.outputs.xlsx_changed != '0' || github.event_name == 'workflow_dispatch'
+      id: get_email
+      if: steps.check_xlsx.outputs.xlsx_changed != '0'
       run: |
-        PR_NUMBER=${{ github.event.number }}
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          echo "author_email=${{ github.actor }}@users.noreply.github.com" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+
         commits=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
           -H "Accept: application/vnd.github.v3+json" \
-          "https://api.github.com/repos/${{ github.repository }}/pulls/$PR_NUMBER/commits")
-        email=$(echo "$commits" | jq -r '.[0].commit.author.email // "${{ github.event.pull_request.user.login }}@users.noreply.github.com"')
-        echo "author_email=$email" >> $GITHUB_ENV
+          "https://api.github.com/repos/${{ github.repository }}/pulls/${PR_NUMBER}/commits")
+
+        # Extract email safely using jq, fallback to noreply
+        email=$(echo "$commits" | jq -r \
+          '.[0].commit.author.email // ""')
+
+        if [ -z "$email" ] || [[ "$email" == *$'\n'* ]] || [[ "$email" == *"="* ]]; then
+          email="${PR_USER_LOGIN}@users.noreply.github.com"
+        fi
+
+        # Write to step output instead of GITHUB_ENV to prevent env injection
+        echo "author_email=$email" >> $GITHUB_OUTPUT
 
     - name: Set up Git identity
-      if: steps.check_xlsx.outputs.xlsx_changed != '0' || github.event_name == 'workflow_dispatch'
+      if: steps.check_xlsx.outputs.xlsx_changed != '0'
       run: |
-        git config --global user.name "${{ github.event.pull_request.user.login }}"
-        git config --global user.email "${{ env.author_email }}"
+        # Use env vars set at job level to avoid script injection
+        git config --global user.name "$PR_USER_LOGIN"
+        git config --global user.email "${{ steps.get_email.outputs.author_email }}"
 
     - name: Install xlsx2csv
-      if: steps.check_xlsx.outputs.xlsx_changed != '0' || github.event_name == 'workflow_dispatch'
+      if: steps.check_xlsx.outputs.xlsx_changed != '0'
       run: sudo apt-get install -y xlsx2csv
 
     - name: Create output directory
-      if: steps.check_xlsx.outputs.xlsx_changed != '0' || github.event_name == 'workflow_dispatch'
+      if: steps.check_xlsx.outputs.xlsx_changed != '0'
       run: |
         rm -rf mosip-data/mosip_master_csv/csv
         mkdir -p mosip-data/mosip_master_csv/csv
 
     - name: Convert all XLSX to CSV
-      if: steps.check_xlsx.outputs.xlsx_changed != '0' || github.event_name == 'workflow_dispatch'
+      if: steps.check_xlsx.outputs.xlsx_changed != '0'
       run: |
         for xlsx_file in mosip-data/mosip_master/xlsx/*.xlsx; do
           csv_file="mosip-data/mosip_master_csv/csv/$(basename "${xlsx_file%.xlsx}.csv")"
@@ -71,10 +90,10 @@ jobs:
         done
 
     - name: Commit and push changes
-      if: steps.check_xlsx.outputs.xlsx_changed != '0' || github.event_name == 'workflow_dispatch'
+      if: steps.check_xlsx.outputs.xlsx_changed != '0'
       run: |
         cd mosip-data
         git branch
         git add .
         git commit -s -m "Added converted CSV files" || echo "No changes to commit"
-        git push "https://x-access-token:${{ secrets.ACTION_PAT }}@github.com/${{ github.event.pull_request.head.repo.full_name }}.git" HEAD:${{ github.event.pull_request.head.ref }}
+        git push "https://x-access-token:${{ secrets.ACTION_PAT }}@github.com/${PR_HEAD_REPO}.git" "HEAD:${PR_HEAD_REF}"
